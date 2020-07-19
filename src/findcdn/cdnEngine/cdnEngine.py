@@ -11,7 +11,10 @@ if a given domain or set of domains use a CDN.
 import concurrent.futures
 import math
 import os
+import gc
+from pymongo import MongoClient, ASCENDING
 from typing import List, Tuple
+import urllib.parse as parse
 
 # Third-Party Libraries
 from tqdm import tqdm
@@ -42,6 +45,7 @@ def chef_executor(
     user_agent: str,
     verbosity: bool,
     interactive: bool,
+    collection = None,
 ):
     """Attempt to make the method "threadsafe" by giving each worker its own detector."""
     # Define detector
@@ -63,6 +67,23 @@ def chef_executor(
             print(f"An unusual exception has occurred:\n{e}")
         return 1
 
+    # Output to database?
+    # Query all with db.domain_cdns.find({"URL": /.*.*/},{"cdns":1,"_id":0}).pretty()
+    if collection:
+        domain_dict = {}
+        if len(domain.cdns) > 0:
+            domain_dict = {
+                "URL": str(domain.url.replace(".","_")),
+                "IP": str(domain.ip)[1:-1],
+                "cdns": str(domain.cdns)[1:-1],
+                "cdns_by_names": str(domain.cdns_by_name)[1:-1],
+            }
+            try:
+                collection.insert_one(domain_dict)
+            except BaseException as e:
+                print(e, domain.url)
+    domain = None
+    gc.collect()
     # Return 0 for success
     return 0
 
@@ -78,6 +99,7 @@ class Chef:
         user_agent: str,
         interactive: bool = False,
         verbose: bool = False,
+        output_path: str = None,
     ):
         """Give the chef the pot to use."""
         self.pot: DomainPot = pot
@@ -86,6 +108,7 @@ class Chef:
         self.timeout: int = timeout
         self.agent = user_agent
         self.interactive = interactive
+        self.output_path = output_path
 
         # Determine thread count
         if threads and threads != 0:
@@ -98,6 +121,13 @@ class Chef:
                 cpu_count = 1
             self.threads = cpu_count  # type: ignore
 
+        # Open creds
+        data = []
+        with open("creds.cfg","r") as fp:
+            data.append(fp.read().split("\n"))
+        self.usr_auth = parse.quote_plus(data[0][0])
+        self.pas_auth = parse.quote_plus(data[0][1])
+
     def grab_cdn(
         self, double: bool = False  # type: ignore
     ):
@@ -109,6 +139,13 @@ class Chef:
             # Give user information about the run:
             print(f"Using {self.threads} threads with a {self.timeout} second timeout")
             print(f"User Agent: {self.agent}\n")
+
+        # Seutp mongo connection
+        mongoURI = f"mongodb://{self.usr_auth}:{self.pas_auth}@127.0.0.1"
+        client = MongoClient(mongoURI)
+        db = client.cdn_list
+        col = db["domain_cdns"]
+        col.create_index("URL", unique=True)
 
         with concurrent.futures.ThreadPoolExecutor(
             max_workers=self.threads
@@ -134,6 +171,7 @@ class Chef:
                     self.agent,
                     self.verbose,
                     self.interactive,
+                    col,
                 )
                 for domain in newpot
             }
@@ -183,13 +221,14 @@ def run_checks(
     interactive: bool = False,
     verbose: bool = False,
     double: bool = False,
+    output_path: str = None,
 ) -> Tuple[List[detectCDN.Domain], int]:
     """Orchestrate the use of DomainPot and Chef."""
     # Our domain pot
     dp = DomainPot(domains)
 
     # Our chef to manage pot
-    chef = Chef(dp, threads, timeout, user_agent, interactive, verbose)
+    chef = Chef(dp, threads, timeout, user_agent, interactive, verbose, output_path)
 
     # Run analysis for all domains
     cnt = chef.run_checks(double)

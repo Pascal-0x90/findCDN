@@ -96,7 +96,7 @@ def main(
 
     # Check domain list
     processed_list, cnt = run_checks(
-        domain_list, threads, timeout, user_agent, interactive, verbose, double_in,
+        domain_list, threads, timeout, user_agent, interactive, verbose, double_in, output_path,
     )
 
     # Parse the domain data
